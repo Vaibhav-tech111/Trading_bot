@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware # ✅ Import CORS middleware
 import asyncio
 import json
 import os
@@ -54,6 +54,8 @@ async def start_session(symbol: str, timeframe: str, duration: int):
     if duration <= 0:
         raise HTTPException(status_code=400, detail="Duration must be a positive integer.")
 
+    # Pass the active_websocket (which might be None if no client is connected yet)
+    # The session_manager will update its websocket reference if needed later
     session_manager = SessionManager(symbol, timeframe, duration, active_websocket)
     await session_manager.start_trading()
     logger.info(f"Started trading session for {symbol} ({timeframe}) for {duration}s")
@@ -100,22 +102,33 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Update active websocket reference
     active_websocket = websocket
+    # If a session is already active, update its internal websocket reference
     if session_manager and session_manager.is_active:
         session_manager.websocket = websocket
+        logger.info("Updated session manager's WebSocket reference.")
 
     try:
         while True:
-            # Keep alive, listen for client messages
+            # Keep alive, listen for client messages (if any)
+            # We primarily push data, so receiving might not be necessary unless you send commands back
             await websocket.receive_text()
     except WebSocketDisconnect:
         logger.warning("WebSocket disconnected.")
         if active_websocket == websocket:
             active_websocket = None
         # 🧩 Gracefully stop any active session on disconnect
-        if session_manager and session_manager.is_active:
-            await session_manager.stop_trading()
-            session_manager = None
-            logger.info("Session stopped due to WebSocket disconnect.")
+        # This might be optional depending on your logic - maybe just remove the websocket reference
+        # and let the session run until duration expires.
+        # For now, let's just remove the reference.
+        if session_manager:
+            session_manager.websocket = None
+            logger.info("Removed WebSocket reference from session manager on disconnect.")
+        # Optionally, stop the session if desired on disconnect:
+        # if session_manager and session_manager.is_active:
+        #     await session_manager.stop_trading()
+        #     session_manager = None
+        #     logger.info("Session stopped due to WebSocket disconnect.")
+
 
 # ✅ Run the app (Render command: uvicorn main:app --host 0.0.0.0 --port $PORT)
 if __name__ == "__main__":
