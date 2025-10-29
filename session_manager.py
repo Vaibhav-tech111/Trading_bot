@@ -6,6 +6,7 @@ from strategy_engine import evaluate_strategy
 from fake_wallet import buy, sell, get_balance
 from summary_report import generate_summary
 import time
+import json # Import json for sending WebSocket messages
 
 logger = logging.getLogger(__name__)
 
@@ -57,22 +58,6 @@ class SessionManager:
                 signal, rsi_val, sma_val = evaluate_strategy(self.closes)
                 current_price = self.closes[-1]
 
-                # Emit live data update via WebSocket if available
-                if self.websocket:
-                    try:
-                        await self.websocket.send_text(json.dumps({
-                            "symbol": self.symbol,
-                            "price": current_price,
-                            "rsi": rsi_val,
-                            "sma": sma_val,
-                            "signal": signal,
-                            "balance": get_balance()
-                        }))
-                    except Exception as e:
-                        logger.warning(f"Could not send WebSocket update: {e}")
-                        # If websocket fails, update the internal reference
-                        self.websocket = None
-
                 # Execute trade based on signal
                 if signal == "BUY":
                     balance = get_balance()
@@ -89,7 +74,6 @@ class SessionManager:
 
                 # Wait before the next evaluation (e.g., for 1m timeframe, evaluate every minute)
                 # This simplistic sleep might not perfectly align with candle closes.
-                # A more robust solution would track the candle close time more precisely.
                 await asyncio.sleep(5) # Evaluate every 5 seconds as an example check frequency
 
         except asyncio.CancelledError:
@@ -114,6 +98,31 @@ class SessionManager:
                 if len(self.closes) > 500:
                     self.closes.pop(0)
                 logger.debug(f"New candle closed for {self.symbol}: {close_price}")
+
+                # Calculate RSI and SMA for the latest data to send with the update
+                # Note: This is calculated for every closed candle, which might be frequent.
+                # Consider optimizing if needed, or sending less frequently.
+                signal, rsi_val, sma_val = evaluate_strategy(self.closes)
+
+                # Prepare the data to send via WebSocket
+                ws_data = {
+                    "symbol": self.symbol,
+                    "price": close_price,
+                    "rsi": rsi_val,
+                    "sma": sma_val,
+                    "signal": signal,
+                    "balance": get_balance()
+                }
+
+                # Send data to the connected WebSocket client (frontend)
+                if self.websocket:
+                    try:
+                        await self.websocket.send_text(json.dumps(ws_data))
+                        logger.debug(f"Sent WebSocket update: {ws_data}")
+                    except Exception as e:
+                        logger.warning(f"Could not send WebSocket update: {e}")
+                        # If websocket fails, update the internal reference
+                        self.websocket = None
 
         try:
             await stream_live_klines(self.symbol, self.timeframe, on_kline_update)
