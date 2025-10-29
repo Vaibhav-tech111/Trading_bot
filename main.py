@@ -1,6 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import json
 import os
@@ -12,21 +12,18 @@ from fake_wallet import load_wallet
 from summary_report import load_summary
 from binance_client import valid_symbols, valid_timeframes  # Import validation lists
 
-# ----------------------#
-# APP INITIALIZATION
-# ----------------------#
-app = FastAPI(title="Anand Trading Bot API", version="1.0.0")
+app = FastAPI()
 
-# ✅ CORS Middleware — allow HTML frontend to connect freely
+# ✅ Allow frontend to connect (CORS fix)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For open testing (you can restrict later)
+    allow_origins=["*"],  # For open testing; restrict later if needed
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Ensure 'data' directory exists
+# Ensure data directory exists
 os.makedirs("data", exist_ok=True)
 
 # Global variables for session management
@@ -37,22 +34,13 @@ active_websocket: Optional[WebSocket] = None
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------#
-# ROUTES
-# ----------------------#
-
 @app.post("/start_session")
 async def start_session(symbol: str, timeframe: str, duration: int):
     """
-    Start a fake trading session.
-    Example payload:
-    {
-      "symbol": "BTCUSDT",
-      "timeframe": "1h",
-      "duration": 3600
-    }
+    Start a trading session for a given symbol, timeframe, and duration.
     """
     global session_manager
+
     if session_manager and session_manager.is_active:
         raise HTTPException(status_code=400, detail="A session is already active. Please stop it first.")
 
@@ -68,66 +56,68 @@ async def start_session(symbol: str, timeframe: str, duration: int):
 
     session_manager = SessionManager(symbol, timeframe, duration, active_websocket)
     await session_manager.start_trading()
-
-    logger.info(f"Started trading session for {symbol} ({timeframe})")
+    logger.info(f"Started trading session for {symbol} ({timeframe}) for {duration}s")
     return {"message": f"Started trading session for {symbol} on {timeframe} for {duration} seconds."}
 
 
 @app.post("/stop_session")
 async def stop_session():
-    """Stop any active trading session."""
+    """
+    Stop the active trading session.
+    """
     global session_manager
+
     if not session_manager or not session_manager.is_active:
         raise HTTPException(status_code=400, detail="No active session to stop.")
-
+    
     await session_manager.stop_trading()
     session_manager = None
-
-    logger.info("Trading session stopped.")
+    logger.info("Trading session stopped manually.")
     return {"message": "Stopped trading session."}
 
 
 @app.get("/get_wallet")
 async def get_wallet():
-    """Return fake wallet data."""
-    data = load_wallet()
-    logger.info("Wallet data fetched.")
-    return data
+    """Return current fake wallet info."""
+    return load_wallet()
 
 
 @app.get("/get_summary")
 async def get_summary():
-    """Return trading summary."""
-    data = load_summary()
-    logger.info("Summary data fetched.")
-    return data
+    """Return current trading summary."""
+    return load_summary()
 
 
-# Optional websocket (future use)
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
-    global active_websocket
-    await websocket.accept()
+    """
+    WebSocket connection for live price and event updates.
+    """
+    global active_websocket, session_manager
 
+    await websocket.accept()
+    logger.info("WebSocket connected.")
+
+    # Update active websocket reference
+    active_websocket = websocket
     if session_manager and session_manager.is_active:
         session_manager.websocket = websocket
 
-    active_websocket = websocket
     try:
         while True:
-            data = await websocket.receive_text()
-            # For now, no messages are handled from client side
+            # Keep alive, listen for client messages
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected.")
+        logger.warning("WebSocket disconnected.")
         if active_websocket == websocket:
             active_websocket = None
-        if session_manager:
-            session_manager.websocket = None
+        # 🧩 Gracefully stop any active session on disconnect
+        if session_manager and session_manager.is_active:
+            await session_manager.stop_trading()
+            session_manager = None
+            logger.info("Session stopped due to WebSocket disconnect.")
 
-
-# ----------------------#
-# ENTRY POINT
-# ----------------------#
+# ✅ Run the app (Render command: uvicorn main:app --host 0.0.0.0 --port $PORT)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
